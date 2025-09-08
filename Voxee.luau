@@ -6,18 +6,37 @@
 --
 -- Created by Rio Manson-Hay (@EmeraldSlash)
 --
--- Version: 1 (2025-08-23)
+-- Version: 2 (2025-09-08)
+--
+
+-------------------------------------------------------------------------------
+
 --
 -- Change Log:
 --
 -- Version 1: Initial version.
+--
+-- Version 2: Added Vox:WithCallback() and Vox:IsReady(), fixed missing 
+-- Vox:Destroy() method, made most Vox methods chainable, improved docs and 
+-- error messages.
+--
+
+-------------------------------------------------------------------------------
+
+-- Example code (retained-mode + auto-update + WithCallback):
+--[[
+local vox = Voxee.NewFromPlayer(game.Players.LocalPlayer, "en"):WithCallback(function(vox)
+	local result = vox:TranslateObject(game, "I really like to eat fish!")
+	print(assert(vox.Translator).LocaleId, result.String)
+end)
+--]]
 
 -- Example code (retained-mode + auto-update):
 --[[
 local vox = Voxee.NewFromPlayer(game.Players.LocalPlayer, "en")
 vox.TranslatorCallback = function()
 	local result = vox:TranslateObject(game, "I really like to eat fish!")
-	print(result.String)
+	print(assert(vox.Translator).LocaleId, result.String)
 end
 --]]
 
@@ -29,10 +48,12 @@ game:GetService("RunService").Heartbeat:Connect(function()
 	if vox.TranslatorDirty then
 		vox.TranslatorDirty = false
 		local result = vox:TranslateObject(game, "I really like to eat fish!")
-		print(result.String)
+		print(assert(vox.Translator).LocaleId, result.String)
 	end
 end)
 --]]
+
+-------------------------------------------------------------------------------
 
 local Module = {}
 
@@ -43,7 +64,7 @@ local LocalizationService = game:GetService("LocalizationService")
 --
 
 Module.QueryMaxAttempts = 3 -- attempts
-Module.QueryAttemptDelay = 1 -- seconds
+Module.QueryAttemptDelay = 1 -- seconds (or whatever unit your Now params uses)
 
 -- This function can be overridden if you want to log query & API errors 
 -- differently.
@@ -58,12 +79,21 @@ export type Vox = {
 	
 	-- To create a Vox, call one of the following:
 	--
-	-- Module.NewFromPlayer(Player, SourceLanguageCode)
-	-- Module.NewEmpty() -- (then use Vox:Add...() methods to set it up)
+	-- Module.NewFromPlayer(Player, SourceLanguageCode, UpdateMode?)
+	-- Module.NewEmpty(UpdateMode?) -- (then Vox:Add...() methods to set it up)
 	--
-	-- Note that both functions take an optional UpdateMode field which defaults 
-	-- to "auto" if not specified. See the AutoUpdate and Update methods below 
-	-- for more information.
+	-- Note that both functions take an optional UpdateMode parameter which 
+	-- defaults to "auto" if not specified. The only other UpdateMode value is 
+	-- "manual". See the AutoUpdate and Update methods below for more 
+	-- information.
+	--
+	-- Module.NewFromPlayer() is equivalent to Module.NewEmpty():AddPlayer().
+	-- For explanation of the two parameters see comments for AddPlayer below.
+	--
+	-- But quickly: takes a SourceLanguageCode parameter to indicate 
+	-- the backup language that should be used if the player's primary Translator
+	-- fails to load. (This will be queried as well, it may not be available 
+	-- immediately.)
 	
 	--
 	-- Important Fields
@@ -72,37 +102,46 @@ export type Vox = {
 	-- The translator that is currently active and will be used by the Translator
 	-- methods. This corresponds to the translator entry with the highest 
 	-- priority. Such a translator is guaranteed to immediately exist in Voxs 
-	-- created by Module.FromPlayer or Voxs which have had Vox:AddPlayer() 
+	-- created by Module.NewFromPlayer or Voxs which have had Vox:AddPlayer() 
 	-- called on them. Otherwise, this field may not be set until an async query 
-	-- to obtain a translator succeeds. If you want to create a plain Vox with a 
-	-- single translator you already have, you can just create an empty Vox and 
-	-- directly set this field.
+	-- to obtain a Translator succeeds. If you want to create a plain Vox with a 
+	-- single Translator that you already have, you can just create an empty Vox 
+	-- and directly set this field.
 	Translator: Translator?;
 	
 	-- The following two fields are immediate-mode and retained-mode signalling 
 	-- mechanisms for your code to detect when Translator or Translator.LocaleId 
-	-- changes. Note that both of these signalling mechanisms will only activate 
-	-- once a Translator is available (see Translator field above). Prior to 
-	-- then, TranslatorDirty will be false and TranslatorCallback won't ever be 
-	-- called.
+	-- changes i.e. when translated text may have potentially changed. Note that 
+	-- both of these signalling mechanisms will only activate once a Translator 
+	-- is available (see Translator field above). Prior to then, TranslatorDirty 
+	-- will be false and TranslatorCallback won't ever be called.
 	--
 	-- (immediate-mode) Automatically set to true to signal that something has 
 	-- changed. Usage code is responsible for setting to false after it has 
 	-- consumed dirty state.
 	TranslatorDirty: boolean;
 	--
-	-- (retained-mode) Called **immediately in the same thread**, without 
-	-- spawning, deferring, or pcalling, when a change occurs. This callback is 
-	-- for usage code to detect changes and build its own APIs/systems on top of 
-	-- the Vox if it wants to.
+	-- (retained-mode) This callback, provided by usage code, will be called 
+	-- **immediately in the same thread**, without spawning, deferring, or 
+	-- pcalling, when a change occurs. This enables the usage code to build its 
+	-- own APIs/systems on top of the Vox if it wants to. Remember that simply
+	-- setting this field won't run the callback if a Translator is already
+	-- available; you should check that on your own.
 	TranslatorCallback: ((Vox: Vox)->())?;
 	
 	--
 	-- Important Methods
 	--
 	
-	-- Don't forget to call this when you are no longer using the Vox!
-	Destroy: (Vox: Vox)->();
+	-- Don't forget to call this when you are no longer using the Vox! Also, 
+	-- after calling Destroy the Vox is now equivalent to an empty Vox, so it 
+	-- can be reused if for some reason you want that.
+	Destroy: (Vox: Vox)->(Vox);
+	
+	-- Returns true if the Vox is ready to start translating. Equivalent to
+	-- Vox.Translator ~= nil. This can be used to avoid logging messages when
+	-- the Translate methods are called without an available Translator.
+	IsReady: (Vox: Vox)->(boolean);
 	
 	-- Wrapper of Translator:FormatByKey(Key, Args). See TranslatorResult for
 	-- more info.
@@ -113,6 +152,14 @@ export type Vox = {
 	-- more info.
 	TranslateObject:
 		(Vox: Vox, Object: Instance, String: string)->(TranslateResult);
+	
+	-- This is a wrapper for setting "Vox.TranslatorCallback = Callback" which 
+	-- will also run the callback (**deferred** to avoid interfering with your 
+	-- code) if a Translator is already available. If subsequent code triggers an
+	-- immediate callback execution then the deferred thread will be cancelled 
+	-- to avoid triggering the callback unnecessarily or out of order. This 
+	-- method also returns the Vox so it can be chained.
+	WithCallback: (Vox: Vox, Callback: (Vox: Vox)->())->(Vox);
 	
 	--
 	-- Extra Fields
@@ -133,29 +180,39 @@ export type Vox = {
 	
 	--
 	-- Extra Methods
+	-- (note: all these methods return the Vox so it can be chained)
 	--
 	
 	-- Manually add a query for a Translator corresponding to a player or locale.
-	AddQuery: (Vox: Vox, Priority: number, PlayerOrLocale: Player|string)->();
+	AddQuery: (Vox: Vox, Priority: number, PlayerOrLocale: Player|string)->(Vox);
 	
 	-- Manually add an existing Translator.
-	AddTranslator: (Vox: Vox, Priority: number, Translator: Translator)->();
+	AddTranslator: (Vox: Vox, Priority: number, Translator: Translator)->(Vox);
 	
-	-- Manually: add queries for a Translator corresponding to the player, and a 
-	-- fallback of the game's source locale fallback Translator; and immediately 
-	-- add a fallback Translator from the player.
-	AddPlayer: (Vox: Vox, Player: Player, SourceLanguageCode: string)->();
+	-- Adds:
+	--
+	-- 1) two queries, one for a Translator corresponding to the Player, and the 
+	-- other for a fallback of the game's source locale fallback Translator 
+	-- (based on the SourceLanguageCode parameter), and
+	--
+	-- 2) a default fallback Translator for the Player provided by the engine 
+	-- which is available to use immediately. So after calling AddPlayer you can
+	-- start translating immediately.
+	--
+	AddPlayer: (Vox: Vox, Player: Player, SourceLanguageCode: string)->(Vox);
 	
 	-- Enable auto-updating queries and entries. There is no need to call this if
 	-- the Vox was created with UpdateMode "auto" (which is also the default).
-	AutoUpdate: (Vox: Vox)->();
+	AutoUpdate: (Vox: Vox)->(Vox);
 	
 	-- Manually update queries and entries. You only need to call these when the 
 	-- Vox was created with UpdateMode "manual" and Vox:AutoUpdate() has not been
-	-- called.
-	Update: (Vox: Vox, Now: number)->(); -- Do both updates in one call.
-	UpdateQueries: (Vox: Vox, Now: number)->(); -- Step 1: Update queries
-	UpdateEntries: (Vox: Vox)->(); -- Step 2: Update entries
+	-- called. Note that the Now parameter can be based on any time source you
+	-- like, such as os.clock() or tick(), as this parameter is the only place
+	-- where the module obtains information about time.
+	Update: (Vox: Vox, Now: number)->(Vox); -- Do both updates in one call.
+	UpdateQueries: (Vox: Vox, Now: number)->(Vox); -- Step 1: Update queries
+	UpdateEntries: (Vox: Vox)->(Vox); -- Step 2: Update entries
 	
 	--
 	-- Internal fields
@@ -171,6 +228,7 @@ export type Vox = {
 	
 	TranslatorConnection: RBXScriptConnection?; -- Watch Translator.LocaleId
 	AutoUpdateConnection: RBXScriptConnection?; -- Update on Heartbeat
+	DeferredTranslatorCallbackThread: thread?; -- Used by WithCallback method.
 }
 
 Module.GOOD = "VOX_TRANSLATE_GOOD"
@@ -213,6 +271,38 @@ export type TranslatorEntry = {
 -- Implementation
 --
 
+-- After calling Destroy, the Vox is now equivalent to an empty Vox.
+function Module.Destroy(Vox: Vox)
+	if Vox.AutoUpdateConnection then
+		Vox.AutoUpdateConnection:Disconnect()
+		Vox.AutoUpdateConnection = nil
+	end
+	if Vox.TranslatorConnection then
+		Vox.TranslatorConnection:Disconnect()
+		Vox.TranslatorConnection = nil
+	end
+	if Vox.DeferredTranslatorCallbackThread then
+		coroutine.close(Vox.DeferredTranslatorCallbackThread)
+		Vox.DeferredTranslatorCallbackThread = nil
+	end
+	
+	table.clear(Vox.Queries)
+	
+	Vox.EntriesDirty = false
+	table.clear(Vox.Entries)
+	
+	Vox.TranslatorDirty = false
+	Vox.Translator = nil
+	
+	return Vox
+end
+
+function Module.Update(Vox: Vox, Now: number)
+	Module.UpdateQueries(Vox, Now)
+	Module.UpdateEntries(Vox)
+	return Vox
+end
+
 local function Async_TranslatorQuery(Query: TranslatorQuery)
 	local Translator
 	
@@ -244,25 +334,6 @@ local function Async_TranslatorQuery(Query: TranslatorQuery)
 			else Translator;
 	}
 	Query.Thread = nil
-end
-
-function Module.Destroy(Vox: Vox)
-	if Vox.AutoUpdateConnection then
-		Vox.AutoUpdateConnection:Disconnect()
-		Vox.AutoUpdateConnection = nil
-	end
-	if Vox.TranslatorConnection then
-		Vox.TranslatorConnection:Disconnect()
-		Vox.TranslatorConnection = nil
-	end
-	table.clear(Vox.Queries)
-	-- Vox.Entries is not cleared, to prevent subsequent updates from throwing 
-	-- errors.
-end
-
-function Module.Update(Vox: Vox, Now: number)
-	Module.UpdateQueries(Vox, Now)
-	Module.UpdateEntries(Vox)
 end
 
 function Module.UpdateQueries(Vox: Vox, Now: number)
@@ -319,6 +390,7 @@ function Module.UpdateQueries(Vox: Vox, Now: number)
 			end
 		end
 	end
+	return Vox
 end
 
 function Module.UpdateEntries(Vox: Vox)
@@ -356,6 +428,7 @@ function Module.UpdateEntries(Vox: Vox)
 			end
 		end
 	end
+	return Vox
 end
 
 export type UpdateMode =
@@ -368,9 +441,12 @@ function Module.NewEmpty(UpdateMode: UpdateMode?): Vox
 	
 	Vox.Queries = {}
 	Vox.Entries = {}
+	Vox.EntriesDirty = false
 	
 	-- WARNING! Vox cannot be used until something is added to it.
 	Vox.Translator = nil :: any
+	Vox.TranslatorDirty = false
+	Vox.WithCallback = Module.WithCallback
 	
 	Vox.AddQuery = Module.AddQuery
 	Vox.AddTranslator = Module.AddTranslator
@@ -381,8 +457,11 @@ function Module.NewEmpty(UpdateMode: UpdateMode?): Vox
 	Vox.UpdateQueries = Module.UpdateQueries
 	Vox.UpdateEntries = Module.UpdateEntries
 	
+	Vox.IsReady = Module.IsReady
 	Vox.TranslateKey = Module.TranslateKey
 	Vox.TranslateObject = Module.TranslateObject
+	
+	Vox.Destroy = Module.Destroy
 	
 	Vox.FAIL = Module.FAIL
 	Vox.GOOD = Module.GOOD
@@ -418,6 +497,7 @@ function Module.AddQuery(
 		LastAt = -math.huge;
 		Attempts = 0;
 	}
+	return Vox
 end
 function Module.AddTranslator(
 	Vox: Vox,
@@ -429,6 +509,7 @@ function Module.AddTranslator(
 		Translator = Translator;
 	}
 	Vox.EntriesDirty = true
+	return Vox
 end
 function Module.AddPlayer(Vox: Vox, Player: Player, SourceLanguageCode: string)
 	Vox.Queries[#Vox.Queries+1] = {
@@ -448,6 +529,42 @@ function Module.AddPlayer(Vox: Vox, Player: Player, SourceLanguageCode: string)
 	-- Update the entries so that the default translator is added immediately and
 	-- can be used by subsequent code.
 	Vox:UpdateEntries()
+	return Vox
+end
+
+function Module.WithCallback(
+	Vox: Vox,
+	Callback: (Vox: Vox)->()
+)
+	local function NewCallback()
+		Vox.DeferredTranslatorCallbackThread = nil
+		Callback(Vox)
+	end
+	Vox.TranslatorCallback = NewCallback
+	
+	if Vox.DeferredTranslatorCallbackThread then
+		coroutine.close(Vox.DeferredTranslatorCallbackThread)
+		Vox.DeferredTranslatorCallbackThread = nil
+	end
+	if Vox.Translator then
+		Vox.DeferredTranslatorCallbackThread = coroutine.create(NewCallback)
+		task.defer(Vox.DeferredTranslatorCallbackThread :: thread)
+	end
+	
+	return Vox
+end
+
+local function GetErrorMessage(Vox)
+	local Count = #Vox.Queries
+	local Incomplete =
+		if Count < 1 then ""
+		elseif Count == 1 then "There is 1 incomplete Translator query which you might need to wait for."
+		else ("There are %d incomplete Translator queries which you might need to wait for."):format(Count)
+	return ("Vox is missing a Translator! You may have forgotten to add them via Vox:AddPlayer(), Vox:AddTranslator(), or Vox:AddQuery().%s"):format(Incomplete)
+end
+
+function Module.IsReady(Vox: Vox)
+	return Vox.Translator ~= nil
 end
 
 function Module.TranslateKey(
@@ -462,8 +579,7 @@ function Module.TranslateKey(
 		Error = Module.FAIL;
 	}
 	if not Vox.Translator then
-		Module.LogAPI(Vox,
-			debug.traceback("Vox is missing a Translator! Did you forget to add one?", 2))
+		Module.LogAPI(Vox, debug.traceback(GetErrorMessage(Vox), 2))
 	else
 		local Success, String = pcall(
 			Vox.Translator.FormatByKey, Vox.Translator, Key, Args)
@@ -490,7 +606,7 @@ function Module.TranslateObject(
 	}
 	if not Vox.Translator then
 		Module.LogAPI(Vox,
-			debug.traceback("Vox is missing a Translator! Did you forget to add one?", 2))
+			debug.traceback(GetErrorMessage(Vox), 2))
 	else
 		local Success, String = pcall(
 			Vox.Translator.Translate, Vox.Translator, Object, String)
@@ -515,6 +631,7 @@ function Module.AutoUpdate(Vox: Vox)
 		end)
 		Vox.AutoUpdateConnection = Connection
 	end
+	return Vox
 end
 
 return Module
