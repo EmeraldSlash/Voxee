@@ -6,7 +6,7 @@
 --
 -- Created by Rio Manson-Hay (@EmeraldSlash)
 --
--- Version: 2 (2025-09-08)
+-- Version: 3 (2025-09-25)
 --
 
 -------------------------------------------------------------------------------
@@ -19,6 +19,13 @@
 -- Version 2: Added Vox:WithCallback() and Vox:IsReady(), fixed missing 
 -- Vox:Destroy() method, made most Vox methods chainable, improved docs and 
 -- error messages.
+--
+-- Version 3: Made TranslateResult.String return either the user-provided key or
+-- the untranslated message when a translation attempt fails, made
+-- TranslateResult.Error also return any usage errors related to the module's
+-- API, improved error string names, renamed .LogAPI() to .LogUsage(), and
+-- added .LogTranslate() to log the errors related to failed translation
+-- attempts.
 --
 
 -------------------------------------------------------------------------------
@@ -66,12 +73,15 @@ local LocalizationService = game:GetService("LocalizationService")
 Module.QueryMaxAttempts = 3 -- attempts
 Module.QueryAttemptDelay = 1 -- seconds (or whatever unit your Now params uses)
 
--- This function can be overridden if you want to log query & API errors 
--- differently.
+-- These function can be overridden if you want to log query, translate, & API
+-- usage errors differently.
 function Module.LogQuery(Vox: Vox, String: string)
 	warn(String)
 end
-function Module.LogAPI(Vox: Vox, String: string)
+function Module.LogTranslate(Vox: Vox, String: string)
+	warn(String)
+end
+function Module.LogUsage(Vox: Vox, String: string)
 	warn(String)
 end
 
@@ -143,12 +153,12 @@ export type Vox = {
 	-- the Translate methods are called without an available Translator.
 	IsReady: (Vox: Vox)->(boolean);
 	
-	-- Wrapper of Translator:FormatByKey(Key, Args). See TranslatorResult for
+	-- Wrapper of Translator:FormatByKey(Key, Args). See TranslateResult for
 	-- more info.
 	TranslateKey:
 		(Vox: Vox, Key: string, Args: ({[number]: string} | {[string]: string})?)->(TranslateResult);
 	
-	-- Wrapper of Translator:Translate(Object, String). See TranslatorResult for
+	-- Wrapper of Translator:Translate(Object, String). See TranslateResult for
 	-- more info.
 	TranslateObject:
 		(Vox: Vox, Object: Instance, String: string)->(TranslateResult);
@@ -175,8 +185,8 @@ export type Vox = {
 	-- Used to in TranslateResult to indicate sucess or failure of translate 
 	-- operations. Again so that you can obtain these values without requiring
 	-- this module.
-	GOOD: string;
-	FAIL: string;
+	ERR_SUCCESS: string;
+	ERR_UNKNOWN: string;
 	
 	--
 	-- Extra Methods
@@ -231,8 +241,8 @@ export type Vox = {
 	DeferredTranslatorCallbackThread: thread?; -- Used by WithCallback method.
 }
 
-Module.GOOD = "VOX_TRANSLATE_GOOD"
-Module.FAIL = "VOX_TRANSLATE_FAIL"
+Module.ERR_SUCCESS = "VOX_ERR_SUCCESS"
+Module.ERR_UNKNOWN = "VOX_ERR_UNKNOWN"
 
 export type TranslateResult = {
 	-- Every field of this type will always be set to a usable value, so you can 
@@ -241,9 +251,19 @@ export type TranslateResult = {
 	--
 	-- TextLabel.Text = Vox:TranslateKey("text_label_text").String
 	
-	Success: boolean; -- Success: true, Fail: false 
-	String: string; -- Success: the translated string, Fail: Vox.FAIL
-	Error: string; -- Success: Vox.GOOD, Fail: the error message (or Vox.FAIL)
+	-- Success: The translated string
+	-- Fail: The key (TranslateKey) or the untranslated string (TranslateObject)
+	String: string;
+
+	-- Success: true
+	-- Fail: false
+	Success: boolean;
+
+	-- Success: Vox.ERR_SUCCESS
+	-- Fail: The error message related to Roblox's API, or the error message
+	-- logged due to incorrect usage of the Vox API, or VOX.ERR_UNKNOWN for
+	-- unknown errors.
+	Error: string;
 }
 
 --
@@ -463,8 +483,8 @@ function Module.NewEmpty(UpdateMode: UpdateMode?): Vox
 	
 	Vox.Destroy = Module.Destroy
 	
-	Vox.FAIL = Module.FAIL
-	Vox.GOOD = Module.GOOD
+	Vox.ERR_UNKNOWN = Module.ERR_UNKNOWN
+	Vox.ERR_SUCCESS = Module.ERR_SUCCESS
 	
 	if (not UpdateMode) or (UpdateMode == "auto") then
 		Module.AutoUpdate(Vox)
@@ -575,19 +595,23 @@ function Module.TranslateKey(
 	
 	local Result: TranslateResult = {
 		Success = false;
-		String = Module.FAIL;
-		Error = Module.FAIL;
+		String = Key;
+		Error = Module.ERR_UNKNOWN;
 	}
 	if not Vox.Translator then
-		Module.LogAPI(Vox, debug.traceback(GetErrorMessage(Vox), 2))
+		local ErrorMessage = GetErrorMessage(Vox)
+		Module.LogUsage(Vox, debug.traceback(ErrorMessage, 2))
+		Result.Error = ErrorMessage
 	else
 		local Success, String = pcall(
 			Vox.Translator.FormatByKey, Vox.Translator, Key, Args)
 		if not Success then
-			Result.Error = String
+			Module.LogTranslate(Vox, String or Module.ERR_UNKNOWN)
+			Result.Error = String or Module.ERR_UNKNOWN
 		else
 			Result.Success = true
 			Result.String = assert(String)
+			Result.Error = Module.ERR_SUCCESS
 		end
 	end
 	return Result
@@ -601,21 +625,23 @@ function Module.TranslateObject(
 	
 	local Result: TranslateResult = {
 		Success = false;
-		String = Module.FAIL;
-		Error = Module.FAIL;
+		String = String;
+		Error = Module.ERR_UNKNOWN;
 	}
 	if not Vox.Translator then
-		Module.LogAPI(Vox,
-			debug.traceback(GetErrorMessage(Vox), 2))
+		local ErrorMessage = GetErrorMessage(Vox)
+		Module.LogUsage(Vox, debug.traceback(ErrorMessage, 2))
+		Result.Error = ErrorMessage
 	else
 		local Success, String = pcall(
 			Vox.Translator.Translate, Vox.Translator, Object, String)
 		if not Success then
-			Result.Error = String
+			Module.LogTranslate(Vox, String or Module.ERR_UNKNOWN)
+			Result.Error = String or Module.ERR_UNKNOWN
 		else
 			Result.Success = true
 			Result.String = assert(String)
-			Result.Error = Module.GOOD
+			Result.Error = Module.ERR_SUCCESS
 		end
 	end
 	return Result
